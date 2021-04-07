@@ -24,7 +24,11 @@ private:
     int32_t cpu_time;           // total time spent running on a CPU core
     int32_t remain_time;        // CPU time remaining until terminated
     uint64_t launch_time;       // actual time in ms (since epoch) that process was 'launched'
+
     // you are welcome to add other private data fields here if you so choose
+    int32_t initial_remain_time;
+    int32_t ready_queue_start_time;
+    int32_t interrupt_time_completed;
 
 public:
     Process(ProcessDetails details, uint64_t current_time);
@@ -32,7 +36,7 @@ public:
 
     uint16_t getPid() const;
     uint32_t getStartTime() const;
-    uint8_t getPriority() const;
+    uint8_t getPriority() const; 
     uint64_t getBurstStartTime() const;
     State getState() const;
     bool isInterrupted() const;
@@ -41,13 +45,20 @@ public:
     double getWaitTime() const;
     double getCpuTime() const;
     double getRemainingTime() const;
+    uint16_t getCurrentBurst() const;           //added
+    uint16_t getNumBursts() const;              //added
+    uint32_t getBurstTime(int burst_idx) const; //added
 
+    void setRemainingTime(int32_t time);        //added
+    void setBurst(uint16_t burst_idx);          //added
+    void nextBurst();                           //added
     void setBurstStartTime(uint64_t current_time);
     void setState(State new_state, uint64_t current_time);
     void setCpuCore(int8_t core_num);
     void interrupt();
     void interruptHandled();
 
+    //updates
     void updateProcess(uint64_t current_time);
     void updateBurstTime(int burst_idx, uint32_t new_time);
 };
