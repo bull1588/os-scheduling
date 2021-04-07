@@ -29,6 +29,8 @@ std::string processStateToString(Process::State state);
 
 int main(int argc, char **argv)
 {
+    std::cout << "Starting program.";
+
     // Ensure user entered a command line parameter for configuration file name
     if (argc < 2)
     {
@@ -40,6 +42,8 @@ int main(int argc, char **argv)
     int i;
     SchedulerData *shared_data;
     std::vector<Process*> processes;
+
+    std::cout << "Starting file read.";
 
     // Read configuration file for scheduling simulation
     SchedulerConfig *config = readConfigFile(argv[1]);
@@ -188,18 +192,72 @@ int main(int argc, char **argv)
 
 void coreRunProcesses(uint8_t core_id, SchedulerData *shared_data)
 {
-    // Work to be done by each core idependent of the other cores
-    // Repeat until all processes in terminated state:
-    //   - *Get process at front of ready queue
-    //   - Simulate the processes running until one of the following:
-    //     - CPU burst time has elapsed
-    //     - Interrupted (RR time slice has elapsed or process preempted by higher priority process)
-    //  - Place the process back in the appropriate queue
-    //     - I/O queue if CPU burst finished (and process not finished) -- no actual queue, simply set state to IO
-    //     - Terminated if CPU burst finished and no more bursts remain -- no actual queue, simply set state to Terminated
-    //     - *Ready queue if interrupted (be sure to modify the CPU burst time to now reflect the remaining time)
-    //  - Wait context switching time
-    //  - * = accesses shared data (ready queue), so be sure to use proper synchronization
+     // Work to be done by each core idependent of the other cores
+        // Repeat until all processes in terminated state:
+        //  1 - *Get process at front of ready queue
+        //  2 - Simulate the processes running until one of the following:
+        //     - CPU burst time has elapsed
+        //     - Interrupted (RR time slice has elapsed or process preempted by higher priority process)
+        //  3 - Place the process back in the appropriate queue
+        //     - I/O queue if CPU burst finished (and process not finished) -- no actual queue, simply set state to IO
+        //     - Terminated if CPU burst finished and no more bursts remain -- no actual queue, simply set state to Terminated
+        //     - *Ready queue if interrupted (be sure to modify the CPU burst time to now reflect the remaining time)
+        //  4 - Wait context switching time
+        //   - * = accesses shared data (ready queue), so be sure to use proper synchronization
+
+    while(!shared_data->all_terminated){ //Run repeatedly until all processes are terminated. 
+        
+        Process* toRun;
+
+        //Step 1 - Get process at front of ready queue.
+        if(!shared_data->ready_queue.empty()){ //get a process if we have one waiting
+            std::lock_guard<std::mutex> lock(shared_data->mutex); //if shared errors occur, consider moving this lock outside the IF to catch the read conditional
+            toRun = shared_data->ready_queue.front(); 
+            shared_data->ready_queue.pop_front(); //pop_front just evicts the front member, so we have to retrieve it first. 
+        }
+
+        //Step 2 - Simulate the process until one of two conditionals occur - Burst time elapses or Interrupt is flagged
+        toRun->setState(Process::State::Running, currentTime()); //set it to running at the current time flag.
+        toRun->setCpuCore(core_id);
+
+        toRun->setBurstStartTime(currentTime()); //Start "simulation" of CPU burst.
+        toRun->updateProcess(currentTime());
+
+        while(toRun != NULL && currentTime() - toRun->getBurstStartTime() < toRun->getBurstTime(toRun->getCurrentBurst()) && !toRun->isInterrupted()){ 
+           // usleep(1);  //While the time since the start of the current burst is less than the burst's total time, 'run' the process. (Do nothing.)
+        }
+
+        toRun->updateProcess(currentTime());
+        uint64_t endpoint = currentTime();
+
+        //Step 3 - Send process to the appropriate queue
+        if(toRun->getRemainingTime() > 0 && currentTime() - toRun->getBurstStartTime() >= toRun->getBurstTime(toRun->getCurrentBurst())){ 
+            toRun->setState(Process::State::IO, currentTime()); //if the process is unfinished when kicked, it goes to IO.
+            toRun->nextBurst();                                 //Second condition checks if burst is >= done so that it doesn't trip this when interrupted.
+        } else if (toRun->getRemainingTime() == 0){
+            toRun->setState(Process::State::Terminated, currentTime()); //if we finished the last burst, set process to Terminated.
+        } else if (toRun->isInterrupted()){ 
+            std::lock_guard<std::mutex> lock(shared_data->mutex); 
+            toRun->setState(Process::State::Ready, currentTime());
+            toRun->updateBurstTime(toRun->getCurrentBurst(), toRun->getBurstTime(toRun->getCurrentBurst()) - (endpoint - toRun->getBurstStartTime())); //Update CPU Burst time (UNFINISHED)
+            shared_data->ready_queue.push_back(toRun); //If an interrupt occured, send our process back into the ready queue.
+            toRun->interruptHandled(); //set it back to uninterrupted.
+        }
+
+        //Step 4 - Wait for the allotted context switching time.
+        toRun->setCpuCore(-1);
+        usleep(shared_data->context_switch);
+
+        /*Some notes:
+            I can't test it due to an error with file I/O i'm too tired to solve. AFAIK this should work.
+            If anything is missing, it's the setting of essential values for the process, because I don't 100% know what they all are.
+            First I make sure I have a non-empty ready queue and grab the head. Then, I set its state, set its CPU core and remove it from the queue.
+            Then, I repeatedly call updateProcess at the current time. I read over the logic and I'm 70% sure this would work, but I added a sleep
+            function in case it operates wastefully. 
+            Once that loop breaks we figure out what to do with this process, wrap things up and move on to the next one. 
+
+        */
+    }
 }
 
 int printProcessOutput(std::vector<Process*>& processes, std::mutex& mutex)
