@@ -67,7 +67,14 @@ int main(int argc, char **argv)
         {
             shared_data->ready_queue.push_back(p);
         }
+
+        std::cout << "For process: " << i << " - ";
+        for(int i = 0; i < p->getNumBursts(); i++){
+            std::cout << p->getBurstTime(i) << " ";
+        }
     }
+
+
 
     // Free configuration data from memory
     deleteConfig(config);
@@ -105,18 +112,20 @@ int main(int argc, char **argv)
                 {
                 std::lock_guard<std::mutex> lock(shared_data->mutex);
                 shared_data->ready_queue.push_back(processes[i]);
+                //std::cout << "Pushed to ready queue from NotStarted\n";
                 }
             }
             //3- *Check if any processes have finished their I/O burst, and if so put that process back in the ready queue.
             //AKA if process is in I/O AND the time it has spent in current burst is GREATER than the time needed for the current burst
             if((processes[i]->getState() == Process::State::IO) 
-                && (current_time - processes[i]->getBurstStartTime() > processes[i]->getBurstTime(processes[i]->getCurrentBurst())))
+                && (current_time - processes[i]->getBurstStartTime() >= processes[i]->getBurstTime(processes[i]->getCurrentBurst())))
             {
             processes[i]->setState(Process::State::Ready, currentTime()); //now in ready queue
             processes[i]->nextBurst(); //move to next since IO burst is over
                 {
                     std::lock_guard<std::mutex> lock(shared_data->mutex);
                     shared_data->ready_queue.push_back(processes[i]);
+                    //std::cout << "Pushed to ready queue from IO\n";
                 }
             }   
             //4- *Check if any running process need to be interrupted (RR time slice expires or newly ready process has higher priority)
@@ -130,7 +139,8 @@ int main(int argc, char **argv)
             //if ready queue not empty AND current process is not lower priority than top of queue (indicated by a higher priority value)
             if((processes[i]->getState() == Process::State::Running) 
                 && (!shared_data->ready_queue.empty()) 
-                && (processes[i]->getPriority() > shared_data->ready_queue.front()->getPriority()))
+                && (processes[i]->getPriority() > shared_data->ready_queue.front()->getPriority())
+                && shared_data->algorithm == ScheduleAlgorithm::PP)
             {
                 processes[i]->interrupt(); //interrupt!
             }
@@ -207,7 +217,7 @@ void coreRunProcesses(uint8_t core_id, SchedulerData *shared_data)
 
     while(!shared_data->all_terminated){ //Run repeatedly until all processes are terminated. 
         
-        Process* toRun;
+        Process *toRun;
 
         //Step 1 - Get process at front of ready queue.
         if(!shared_data->ready_queue.empty()){ //get a process if we have one waiting
@@ -216,47 +226,52 @@ void coreRunProcesses(uint8_t core_id, SchedulerData *shared_data)
             shared_data->ready_queue.pop_front(); //pop_front just evicts the front member, so we have to retrieve it first. 
         }
 
+        if(toRun != NULL){
+            toRun->setBurstStartTime(currentTime()); //Start "simulation" of CPU burst.
+        }
+
         //Step 2 - Simulate the process until one of two conditionals occur - Burst time elapses or Interrupt is flagged
-        toRun->setState(Process::State::Running, currentTime()); //set it to running at the current time flag.
-        toRun->setCpuCore(core_id);
-
-        toRun->setBurstStartTime(currentTime()); //Start "simulation" of CPU burst.
-        toRun->updateProcess(currentTime());
-
-        while(toRun != NULL && currentTime() - toRun->getBurstStartTime() < toRun->getBurstTime(toRun->getCurrentBurst()) && !toRun->isInterrupted()){ 
-           // usleep(1);  //While the time since the start of the current burst is less than the burst's total time, 'run' the process. (Do nothing.)
+        while(toRun != NULL){ 
+          //usleep(30000);
+          toRun->setState(Process::State::Running, currentTime()); //set it to running at the current time flag.
+          uint64_t time = currentTime();
+          toRun->updateProcess(time);
+          toRun->setCpuCore(core_id);
+          //std::cout << "PID: " << toRun->getPid() << ", Elapsed time" << time - toRun->getBurstStartTime() << "\n";
+          //std::cout << "PID: " << toRun->getPid() << ", Burst time" << toRun->getBurstTime(toRun->getCurrentBurst()) << "\n";
+            if(toRun != NULL && time - toRun->getBurstStartTime() >= toRun->getBurstTime(toRun->getCurrentBurst())){
+                //std::cout << "Finished burst. \n";
+                toRun->nextBurst(); 
+                toRun->setBurstStartTime(time);      
+                if(toRun->getRemainingTime() > 0 && toRun->getCurrentBurst() < toRun->getNumBursts()){ 
+                    //std::cout << "IO \n";
+                    //usleep(30000);
+                    toRun->setState(Process::State::IO, time); //if the process is unfinished when kicked, it goes to IO.
+                    //std::cout << "Set state \n";
+                    toRun->setCpuCore(-1);
+                    toRun = NULL;
+                    //std::cout << "Set state \n";
+                } else {
+                    toRun->setState(Process::State::Terminated, time); //if we finished the last burst, set process to Terminated.
+                    toRun->setRemainingTime(0);
+                    //td::cout << "Terminate pid: " << toRun->getPid() << "\n";
+                    toRun->setCpuCore(-1); 
+                    toRun = NULL;
+                }
+            } else if(toRun != NULL && toRun->isInterrupted()){
+                std::lock_guard<std::mutex> lock(shared_data->mutex); 
+                toRun->setState(Process::State::Ready, time);
+                toRun->updateProcess(time);
+                toRun->updateBurstTime(toRun->getCurrentBurst(), toRun->getBurstTime(toRun->getCurrentBurst()) - (time - toRun->getBurstStartTime())); //Update CPU Burst time (UNFINISHED)
+                shared_data->ready_queue.push_back(toRun); //If an interrupt occured, send our process back into the ready queue
+                //std::cout << "Pushed to ready queue from Interrupt\n";
+                toRun->interruptHandled(); //set it back to uninterrupted.
+                toRun = NULL;
+            }
         }
-
-        toRun->updateProcess(currentTime());
-        uint64_t endpoint = currentTime();
-
-        //Step 3 - Send process to the appropriate queue
-        if(toRun->getRemainingTime() > 0 && currentTime() - toRun->getBurstStartTime() >= toRun->getBurstTime(toRun->getCurrentBurst())){ 
-            toRun->setState(Process::State::IO, currentTime()); //if the process is unfinished when kicked, it goes to IO.
-            toRun->nextBurst();                                 //Second condition checks if burst is >= done so that it doesn't trip this when interrupted.
-        } else if (toRun->getRemainingTime() == 0){
-            toRun->setState(Process::State::Terminated, currentTime()); //if we finished the last burst, set process to Terminated.
-        } else if (toRun->isInterrupted()){ 
-            std::lock_guard<std::mutex> lock(shared_data->mutex); 
-            toRun->setState(Process::State::Ready, currentTime());
-            toRun->updateBurstTime(toRun->getCurrentBurst(), toRun->getBurstTime(toRun->getCurrentBurst()) - (endpoint - toRun->getBurstStartTime())); //Update CPU Burst time (UNFINISHED)
-            shared_data->ready_queue.push_back(toRun); //If an interrupt occured, send our process back into the ready queue.
-            toRun->interruptHandled(); //set it back to uninterrupted.
-        }
-
         //Step 4 - Wait for the allotted context switching time.
-        toRun->setCpuCore(-1);
+        
         usleep(shared_data->context_switch);
-
-        /*Some notes:
-            I can't test it due to an error with file I/O i'm too tired to solve. AFAIK this should work.
-            If anything is missing, it's the setting of essential values for the process, because I don't 100% know what they all are.
-            First I make sure I have a non-empty ready queue and grab the head. Then, I set its state, set its CPU core and remove it from the queue.
-            Then, I repeatedly call updateProcess at the current time. I read over the logic and I'm 70% sure this would work, but I added a sleep
-            function in case it operates wastefully. 
-            Once that loop breaks we figure out what to do with this process, wrap things up and move on to the next one. 
-
-        */
     }
 }
 
