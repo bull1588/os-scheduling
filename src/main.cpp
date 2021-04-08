@@ -239,7 +239,6 @@ void coreRunProcesses(uint8_t core_id, SchedulerData *shared_data)
         }
         //Step 2 - Simulate the process until one of two conditionals occur - Burst time elapses or Interrupt is flagged
         while(toRun != NULL){ 
-          //usleep(30000);
           toRun->setState(Process::State::Running, currentTime()); //set it to running at the current time flag.
           uint64_t time = currentTime();
           toRun->updateProcess(time);
@@ -248,7 +247,6 @@ void coreRunProcesses(uint8_t core_id, SchedulerData *shared_data)
                 toRun->nextBurst(); 
                 toRun->setBurstStartTime(time);      
                 if(toRun->getRemainingTime() > 0 && toRun->getCurrentBurst() < toRun->getNumBursts()){ 
-                    //usleep(30000);
                     toRun->setState(Process::State::IO, time); //if the process is unfinished when kicked, it goes to IO.
                     toRun->setCpuCore(-1);
                     toRun = NULL;
