@@ -244,29 +244,20 @@ void coreRunProcesses(uint8_t core_id, SchedulerData *shared_data)
 
         //Step 2 - Simulate the process until one of two conditionals occur - Burst time elapses or Interrupt is flagged
         while(toRun != NULL){ 
-          //usleep(30000);
           toRun->setState(Process::State::Running, currentTime()); //set it to running at the current time flag.
           uint64_t time = currentTime();
           toRun->updateProcess(time);
           toRun->setCpuCore(core_id);
-          //std::cout << "PID: " << toRun->getPid() << ", Elapsed time" << time - toRun->getBurstStartTime() << "\n";
-          //std::cout << "PID: " << toRun->getPid() << ", Burst time" << toRun->getBurstTime(toRun->getCurrentBurst()) << "\n";
             if(toRun != NULL && time - toRun->getBurstStartTime() >= toRun->getBurstTime(toRun->getCurrentBurst())){
-                //std::cout << "Finished burst. \n";
                 toRun->nextBurst(); 
                 toRun->setBurstStartTime(time);      
                 if(toRun->getRemainingTime() > 0 && toRun->getCurrentBurst() < toRun->getNumBursts()){ 
-                    //std::cout << "IO \n";
-                    //usleep(30000);
                     toRun->setState(Process::State::IO, time); //if the process is unfinished when kicked, it goes to IO.
-                    //std::cout << "Set state \n";
                     toRun->setCpuCore(-1);
                     toRun = NULL;
-                    //std::cout << "Set state \n";
                 } else {
                     toRun->setState(Process::State::Terminated, time); //if we finished the last burst, set process to Terminated.
                     toRun->setRemainingTime(0);
-                    //td::cout << "Terminate pid: " << toRun->getPid() << "\n";
                     toRun->setCpuCore(-1); 
                     toRun = NULL;
                 }
@@ -276,7 +267,6 @@ void coreRunProcesses(uint8_t core_id, SchedulerData *shared_data)
                 toRun->updateProcess(time);
                 toRun->updateBurstTime(toRun->getCurrentBurst(), toRun->getBurstTime(toRun->getCurrentBurst()) - (time - toRun->getBurstStartTime())); //Update CPU Burst time (UNFINISHED)
                 shared_data->ready_queue.push_back(toRun); //If an interrupt occured, send our process back into the ready queue
-                //std::cout << "Pushed to ready queue from Interrupt\n";
                 toRun->interruptHandled(); //set it back to uninterrupted.
                 toRun = NULL;
             }
