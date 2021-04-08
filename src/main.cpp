@@ -29,21 +29,16 @@ std::string processStateToString(Process::State state);
 
 int main(int argc, char **argv)
 {
-    std::cout << "Starting program.";
-
     // Ensure user entered a command line parameter for configuration file name
     if (argc < 2)
     {
         std::cerr << "Error: must specify configuration file" << std::endl;
         exit(EXIT_FAILURE);
     }
-
     // Declare variables used throughout main
     int i;
     SchedulerData *shared_data;
     std::vector<Process*> processes;
-
-    std::cout << "Starting file read.";
 
     // Read configuration file for scheduling simulation
     SchedulerConfig *config = readConfigFile(argv[1]);
@@ -67,11 +62,6 @@ int main(int argc, char **argv)
         {
             shared_data->ready_queue.push_back(p);
         }
-
-        std::cout << "For process: " << i << " - ";
-        for(int i = 0; i < p->getNumBursts(); i++){
-            std::cout << p->getBurstTime(i) << " ";
-        }
     }
     // Free configuration data from memory
     deleteConfig(config);
@@ -88,7 +78,6 @@ int main(int argc, char **argv)
     while (!(shared_data->all_terminated)){
         // Clear output from previous iteration
         clearOutput(num_lines);
-       
         for(int i = 0; i < processes.size(); i++){
             //1- get current time
             uint64_t current_time = currentTime(); 
@@ -163,7 +152,6 @@ int main(int argc, char **argv)
         // sleep 50 ms
         usleep(50000);
     }
-
     // wait for threads to finish
     for (i = 0; i < num_cores; i++)
     {
@@ -263,11 +251,11 @@ void coreRunProcesses(uint8_t core_id, SchedulerData *shared_data)
                 toRun->updateBurstTime(toRun->getCurrentBurst(), toRun->getBurstTime(toRun->getCurrentBurst()) - (time - toRun->getBurstStartTime())); //Update CPU Burst time (UNFINISHED)
                 shared_data->ready_queue.push_back(toRun); //If an interrupt occured, send our process back into the ready queue
                 toRun->interruptHandled(); //set it back to uninterrupted.
+                toRun->setCpuCore(-1); 
                 toRun = NULL;
             }
         }
         //Step 4 - Wait for the allotted context switching time.
-        
         usleep(shared_data->context_switch);
     }
 }
