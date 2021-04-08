@@ -171,35 +171,120 @@ int main(int argc, char **argv)
     }
 
     // print final statistics
-    //  - CPU utilization
-    //  - Throughput
-    //     - Average for first 50% of processes finished
-    //     - Average for second 50% of processes finished
-    //     - Overall average
-    //  - Average turnaround time
-    //  - Average waiting time
+    double cpu_utilization = 0.0; //percentage
+    double cpu_time = 0.0; //total
+    double throughput_first_half = 0.0; 
+    double throughput_second_half = 0.0; 
+    double throughput_full = 0.0; 
+    double avg_turnaround = 0.0; 
+    double total_turnaround = 0.0;
+    double avg_waiting_time = 0.0; 
+    double total_waiting_time = 0.0;
+    int count_processes = 0;
+    std::vector<double> turnarounds;
 
+    //loop through to get totals for all processes and count
+    for(int i = 0; i < processes.size(); i++){
+        cpu_time += processes[i]->getCpuTime();
+        total_turnaround += processes[i]->getTurnaroundTime();
+        total_waiting_time += processes[i]->getWaitTime();
+        turnarounds.push_back(processes[i]->getTurnaroundTime()); //populate vector holding turn time for each process
+        count_processes++;
+    }
+    avg_turnaround = total_turnaround / count_processes; //average it out
+    avg_waiting_time = total_waiting_time / count_processes;
+    cpu_utilization = (cpu_time / total_turnaround) * 100.0; //mult by 100 to get a percentage
 
+    //now sort turnarounds to see which were the first half done and which were second half
+    std::sort(turnarounds.begin(), turnarounds.end());
+
+    int count_first_half = 0;
+    int count_second_half = 0;
+    for(int i = 0; i < processes.size(); i++){
+        if(i < processes.size() / 2){ //first half
+            throughput_first_half += turnarounds[i];
+            count_first_half++;
+        }
+        else{ //second half
+            throughput_second_half += turnarounds[i];
+            count_second_half++;
+        }
+    }
+    throughput_first_half = count_first_half / throughput_first_half;
+    throughput_second_half = count_second_half / throughput_second_half;
+
+    //print!
+    printf("CPU utilization: %0.1lf percent \n", cpu_utilization);
+    printf("Throughput average for first half: %0.3lf processes per second \n", throughput_first_half);
+    printf("Throughput average for second half: %0.3lf processes per second \n", throughput_second_half);
+    printf("Overall throughput average: %0.3lf processes per second \n", (throughput_first_half + throughput_second_half) / 2);
+    printf("Average turnaround: %0.1lf seconds \n", avg_turnaround);
+    printf("Average waiting time: %0.1lf seconds \n", avg_waiting_time);
     // Clean up before quitting program
     processes.clear();
-
     return 0;
 }
 
 void coreRunProcesses(uint8_t core_id, SchedulerData *shared_data)
 {
-    // Work to be done by each core idependent of the other cores
-    // Repeat until all processes in terminated state:
-    //   - *Get process at front of ready queue
-    //   - Simulate the processes running until one of the following:
-    //     - CPU burst time has elapsed
-    //     - Interrupted (RR time slice has elapsed or process preempted by higher priority process)
-    //  - Place the process back in the appropriate queue
-    //     - I/O queue if CPU burst finished (and process not finished) -- no actual queue, simply set state to IO
-    //     - Terminated if CPU burst finished and no more bursts remain -- no actual queue, simply set state to Terminated
-    //     - *Ready queue if interrupted (be sure to modify the CPU burst time to now reflect the remaining time)
-    //  - Wait context switching time
-    //  - * = accesses shared data (ready queue), so be sure to use proper synchronization
+    while(!shared_data->all_terminated){ //Run repeatedly until all processes are terminated. 
+        
+        Process *toRun;
+
+        //Step 1 - Get process at front of ready queue.
+        if(!shared_data->ready_queue.empty()){ //get a process if we have one waiting
+            std::lock_guard<std::mutex> lock(shared_data->mutex); //if shared errors occur, consider moving this lock outside the IF to catch the read conditional
+            toRun = shared_data->ready_queue.front(); 
+            shared_data->ready_queue.pop_front(); //pop_front just evicts the front member, so we have to retrieve it first. 
+        }
+
+        if(toRun != NULL){
+            toRun->setBurstStartTime(currentTime()); //Start "simulation" of CPU burst.
+        }
+
+        //Step 2 - Simulate the process until one of two conditionals occur - Burst time elapses or Interrupt is flagged
+        while(toRun != NULL){ 
+          //usleep(30000);
+          toRun->setState(Process::State::Running, currentTime()); //set it to running at the current time flag.
+          uint64_t time = currentTime();
+          toRun->updateProcess(time);
+          toRun->setCpuCore(core_id);
+          //std::cout << "PID: " << toRun->getPid() << ", Elapsed time" << time - toRun->getBurstStartTime() << "\n";
+          //std::cout << "PID: " << toRun->getPid() << ", Burst time" << toRun->getBurstTime(toRun->getCurrentBurst()) << "\n";
+            if(toRun != NULL && time - toRun->getBurstStartTime() >= toRun->getBurstTime(toRun->getCurrentBurst())){
+                //std::cout << "Finished burst. \n";
+                toRun->nextBurst(); 
+                toRun->setBurstStartTime(time);      
+                if(toRun->getRemainingTime() > 0 && toRun->getCurrentBurst() < toRun->getNumBursts()){ 
+                    //std::cout << "IO \n";
+                    //usleep(30000);
+                    toRun->setState(Process::State::IO, time); //if the process is unfinished when kicked, it goes to IO.
+                    //std::cout << "Set state \n";
+                    toRun->setCpuCore(-1);
+                    toRun = NULL;
+                    //std::cout << "Set state \n";
+                } else {
+                    toRun->setState(Process::State::Terminated, time); //if we finished the last burst, set process to Terminated.
+                    toRun->setRemainingTime(0);
+                    //td::cout << "Terminate pid: " << toRun->getPid() << "\n";
+                    toRun->setCpuCore(-1); 
+                    toRun = NULL;
+                }
+            } else if(toRun != NULL && toRun->isInterrupted()){
+                std::lock_guard<std::mutex> lock(shared_data->mutex); 
+                toRun->setState(Process::State::Ready, time);
+                toRun->updateProcess(time);
+                toRun->updateBurstTime(toRun->getCurrentBurst(), toRun->getBurstTime(toRun->getCurrentBurst()) - (time - toRun->getBurstStartTime())); //Update CPU Burst time (UNFINISHED)
+                shared_data->ready_queue.push_back(toRun); //If an interrupt occured, send our process back into the ready queue
+                //std::cout << "Pushed to ready queue from Interrupt\n";
+                toRun->interruptHandled(); //set it back to uninterrupted.
+                toRun = NULL;
+            }
+        }
+        //Step 4 - Wait for the allotted context switching time.
+        
+        usleep(shared_data->context_switch);
+    }
 }
 
 int printProcessOutput(std::vector<Process*>& processes, std::mutex& mutex)
